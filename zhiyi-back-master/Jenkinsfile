@@ -1,0 +1,60 @@
+pipeline {
+    agent any
+
+    environment {
+        // 请勿随意改动，会导致k8s拉取镜像失败
+        APP_NAME = 'zhiyi-admin-3.0.0'
+        REGISTRY = 'registry.cn-hangzhou.aliyuncs.com'
+        NAMESPACE = 'zhieasy-online-test'
+    }
+
+    stages {
+        stage('拉取代码') {
+            steps {
+                echo '***************git pull*****************'
+                checkout scmGit(branches: [[name: '*/master']], extensions: [], userRemoteConfigs: [[credentialsId: 'Docker', url: 'https://gitee.com/fish-warrior/zhiyi-back.git']])
+                echo '**************拉取最新代码成功**************'
+            }
+        }
+        stage('前端打包') {
+            steps {
+                echo '*****前端开始打包******'
+                nodejs('NODEJS_16.20.1') {
+                    // 设置镜像源
+                    sh "npm config set registry http://mirrors.cloud.tencent.com/npm/"
+                    sh "npm install"
+                    sh "npm run build:prod"
+                }
+                echo '****前端打包成功****'
+            }
+        }
+        stage('制作镜像推送到阿里云镜像服务') {
+            steps {
+                echo '***开始知制作和上传镜像***'
+                withCredentials([usernamePassword(credentialsId: 'Docker',usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]){
+                    sh '''echo "$PASSWORD" | docker login $REGISTRY -u "$USERNAME" --password-stdin
+                          docker build -t $REGISTRY/zhieasy-docker/zhieasy-images:$APP_NAME .
+                          docker push $REGISTRY/zhieasy-docker/zhieasy-images:$APP_NAME'''
+                }
+                echo '*******镜像制作上传阿里云镜像服务完成******'
+            }
+        }
+        stage('部署到k8s') {
+            steps {
+                echo '*****开始部署到k8s*****'
+                echo '*****登录k8s-master机器*****'
+                sshPublisher(publishers: [sshPublisherDesc(configName: 'k8s-master-0', transfers: [sshTransfer(cleanRemote: false, excludes: '',
+                execCommand: 'kubectl rollout restart deployment/zhiyi-admin -n zhieasy-online-test',
+                execTimeout: 120000,
+                flatten: false,
+                makeEmptyDirs: false,
+                noDefaultExcludes: false,
+                patternSeparator: '[, ]+',
+                remoteDirectory: '',
+                remoteDirectorySDF: false,
+                removePrefix: '', sourceFiles: '')],
+                usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: true)])
+            }
+        }
+    }
+}
